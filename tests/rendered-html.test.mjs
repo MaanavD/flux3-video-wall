@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 async function render() {
@@ -28,7 +29,7 @@ test("renders the FLUX 3 video wall shell", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>FLUX 3 — BFL × Nous Research<\/title>/i);
+  assert.match(html, /<title>FLUX 3 \/ BFL × Nous Research<\/title>/i);
   assert.match(html, /bfl-logotype-white\.svg/);
   assert.match(html, /Black Forest Labs/i);
   assert.match(html, /NOUS RESEARCH/);
@@ -36,4 +37,14 @@ test("renders the FLUX 3 video wall shell", async () => {
   assert.match(html, /ROLL FILM/);
   assert.match(html, /Type a film/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
+});
+
+test("defers stored display preferences until after hydration", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /useState<DisplayMode>\("full"\)/);
+  assert.match(page, /window\.setTimeout\(\(\) => \{/);
+  assert.doesNotMatch(
+    page,
+    /useState<DisplayMode>\(\(\) => \{[\s\S]*?window\.localStorage/,
+  );
 });

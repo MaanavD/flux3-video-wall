@@ -1,14 +1,12 @@
 [
-  {
-    "file": "1-heavy-rain-seed43-golden-sample.mp4",
-    "name": "BFL × Nous",
-    "prompt": "Heavy rain over the city at night",
-    "duration": 10
-  },
-  {
-    "file": "perfect-5s-duration-ab.mp4",
-    "name": "BFL × Nous",
-    "prompt": "Opening night test reel",
-    "duration": 5
-  }
+  { "file": "Batmanosama.mp4", "name": "Batmanosama" },
+  { "file": "gandamu.mp4", "name": "gandamu" },
+  { "file": "XWAVE.mp4", "name": "XWAVE" },
+  { "file": "paulHAX.mp4", "name": "paulHAX" },
+  { "file": "Purz.ai.mp4", "name": "Purz.ai" },
+  { "file": "saranshvfx.mp4", "name": "saranshvfx" },
+  { "file": "Peter Baylies.mp4", "name": "Peter Baylies" },
+  { "file": "koshi_mazaki.mp4", "name": "Koshi Mazaki" },
+  { "file": "@makeitrad.mp4", "name": "@makeitrad" },
+  { "file": "Lyss_Sky.mp4", "name": "Lyss Sky" }
 ]

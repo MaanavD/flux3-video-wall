@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { DatabaseSync } from "node:sqlite";
+import { generationTimeoutMs, shouldExpireGeneration } from "./queue-policy.mjs";
 
 const localDir = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(localDir, "..");
@@ -358,6 +359,42 @@ function updateSubmission(id, fields) {
   ).run(...entries.map(([, value]) => value), nowIso(), id);
 }
 
+function expireStalledSubmissions() {
+  const completedDurations = db
+    .prepare(
+      `SELECT (julianday(updated_at) - julianday(created_at)) * 86400000.0 AS duration_ms
+       FROM submissions
+       WHERE status = 'ready' AND updated_at >= created_at
+       ORDER BY updated_at DESC
+       LIMIT 50`,
+    )
+    .all()
+    .map((submission) => Number(submission.duration_ms));
+  const timeoutMs = generationTimeoutMs(completedDurations);
+  const active = db
+    .prepare(
+      `SELECT id, created_at FROM submissions
+       WHERE status IN ('submitting', 'pending', 'reasoning', 'generating', 'downloading')`,
+    )
+    .all();
+
+  for (const submission of active) {
+    if (
+      !shouldExpireGeneration({
+        createdAt: submission.created_at,
+        timeoutMs,
+      })
+    ) {
+      continue;
+    }
+
+    updateSubmission(submission.id, {
+      status: "failed",
+      error: `Render timed out after ${Math.ceil(timeoutMs / 60_000)} minutes. Likely private or copyrighted content.`,
+    });
+  }
+}
+
 async function downloadCompletedVideo(submission, result, providerSeed) {
   const signedUrl = result?.sample;
   if (!signedUrl) throw new Error("Ready result did not contain result.sample");
@@ -566,6 +603,7 @@ async function workerTick() {
       .all();
 
     await Promise.allSettled(active.map(pollSubmission));
+    expireStalledSubmissions();
 
     const activeCount = db
       .prepare(

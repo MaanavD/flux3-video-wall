@@ -45,6 +45,9 @@ type WallState = {
   queue: Record<string, number>;
 };
 
+type DisplayMode = "full" | "framed";
+const DISPLAY_MODE_STORAGE_KEY = "flux-video-wall-display-mode";
+
 type LibraryState = {
   videos: WallVideo[];
   submissions: Submission[];
@@ -90,7 +93,7 @@ function queueTotal(queue: Record<string, number>) {
   );
 }
 
-function friendlyStatus(status: string) {
+function friendlyStatus(status: string, error?: string | null) {
   const labels: Record<string, string> = {
     queued: "IN QUEUE",
     submitting: "SUBMITTING",
@@ -103,6 +106,9 @@ function friendlyStatus(status: string) {
     failed: "FAILED",
     needs_review: "NEEDS REVIEW",
   };
+  if (status === "failed" && error?.startsWith("Render timed out")) {
+    return "FAILED / LIKELY COPYRIGHTED";
+  }
   return labels[status] || status.replaceAll("_", " ").toUpperCase();
 }
 
@@ -120,7 +126,7 @@ function HoldingScreen() {
       <div className="holding-wash" />
       <div className="holding-inner">
         <span className="holding-eyebrow">
-          BLACK FOREST LABS × NOUS RESEARCH — SAN FRANCISCO
+          BLACK FOREST LABS × NOUS RESEARCH / SAN FRANCISCO
         </span>
         <h1 className="holding-title">
           Type a film
@@ -200,6 +206,17 @@ function Console({
       const inField =
         target instanceof HTMLInputElement ||
         target.getAttribute?.("role") === "radiogroup";
+      if (
+        !inField &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        event.key === "Tab"
+      ) {
+        event.preventDefault();
+        focusStage(stageRef.current);
+        return;
+      }
       if (
         !inField &&
         !event.metaKey &&
@@ -308,7 +325,7 @@ function Console({
           >
             <span className="ticket-stamp">PRINTED</span>
             <span className="ticket-line">
-              {ticket.name.toUpperCase()}&apos;S FILM IS ROLLING — {ticket.duration}S —{" "}
+              {ticket.name.toUpperCase()}&apos;S FILM IS ROLLING. {ticket.duration}S. {" "}
               {providerConfigured
                 ? "IT PREMIERES ON THIS WALL IN 3–10 MINUTES"
                 : "QUEUED LOCALLY UNTIL THE WALL GOES LIVE"}
@@ -335,7 +352,10 @@ function Console({
                   placeholder="who's directing?"
                   onChange={(event) => setName(event.target.value.slice(0, 40))}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === "Tab") {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      event.currentTarget.blur();
+                    } else if (event.key === "Enter" || event.key === "Tab") {
                       event.preventDefault();
                       advanceFromName();
                     }
@@ -355,7 +375,7 @@ function Console({
                   value={prompt}
                   autoComplete="off"
                   spellCheck={false}
-                  placeholder="describe a shot — subject, motion, light…"
+                  placeholder="describe a shot: subject, motion, light…"
                   onChange={(event) =>
                     setPrompt(event.target.value.slice(0, 500))
                   }
@@ -375,7 +395,7 @@ function Console({
                 />
               ) : (
                 <span className="field-stamp ellipsis">
-                  {prompt ? `“${prompt}”` : "—"}
+                  {prompt ? `“${prompt}”` : "NOT SET"}
                 </span>
               )}
             </div>
@@ -419,18 +439,20 @@ function Console({
           </span>
         ) : (
           <span className="hint-keys">
-            ENTER TO CONTINUE · ESC TO GO BACK
+            {stage === "name"
+              ? "ESC TO UNFOCUS · TAB TO RETURN"
+              : "ENTER TO CONTINUE · ESC TO GO BACK"}
             {stage === "duration" ? " · ←/→ TO CHOOSE" : ""}
           </span>
         )}
-        <span className="hint-brand">FLUX 3 — TEXT TO VIDEO</span>
+        <span className="hint-brand">FLUX 3 / TEXT TO VIDEO</span>
       </div>
     </section>
   );
 }
 
 /* ---------------------------------- */
-/* Operator library (⌘⇧L)             */
+/* Operator library (⌥L)               */
 /* ---------------------------------- */
 
 function DeleteVideoDialog({
@@ -537,7 +559,7 @@ function LibraryDialog({
         >
           <header className="library-head">
             <div>
-              <span className="lib-kicker">OPERATOR — THIS LAPTOP</span>
+              <span className="lib-kicker">OPERATOR / THIS LAPTOP</span>
               <Dialog.Title className="lib-title">Reel library</Dialog.Title>
             </div>
             <div className="library-head-actions">
@@ -625,7 +647,7 @@ function LibraryDialog({
             <div className="lib-queue">
               {!library?.providerConfigured && (
                 <p className="lib-warning">
-                  BFL API KEY NOT CONNECTED — PROMPTS ARE SAVED AND WAIT IN THE
+                  BFL API KEY NOT CONNECTED. PROMPTS ARE SAVED AND WAIT IN THE
                   QUEUE.
                 </p>
               )}
@@ -639,7 +661,7 @@ function LibraryDialog({
                     <span
                       className={`lib-status status-${submission.status}`}
                     >
-                      {friendlyStatus(submission.status)}
+                      {friendlyStatus(submission.status, submission.error)}
                     </span>
                     {["failed", "moderated", "needs_review"].includes(
                       submission.status,
@@ -677,9 +699,19 @@ export default function Home() {
   const [rendering, setRendering] = useState<Submission[]>([]);
   const [serverOnline, setServerOnline] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [displayMode, setDisplayMode] = useState<DisplayMode>("full");
   const [videoKey, setVideoKey] = useState(0);
   const currentVideoRef = useRef<WallVideo | null>(null);
+  const historyRef = useRef<WallVideo[]>([]);
+  const futureRef = useRef<WallVideo[]>([]);
   const advancingRef = useRef(false);
+  const displayModeIsReadyRef = useRef(false);
+
+  const playVideo = useCallback((video: WallVideo | null) => {
+    currentVideoRef.current = video;
+    setCurrentVideo(video);
+    setVideoKey((key) => key + 1);
+  }, []);
 
   const advanceVideo = useCallback(async (excludeId?: string) => {
     if (advancingRef.current) return;
@@ -692,18 +724,41 @@ export default function Home() {
           body: JSON.stringify({ excludeId }),
         },
       );
-      currentVideoRef.current = result.video;
-      setCurrentVideo(result.video);
-      setVideoKey((key) => key + 1);
+      const activeVideo = currentVideoRef.current;
+      if (result.video && activeVideo && result.video.id !== activeVideo.id) {
+        historyRef.current = [...historyRef.current, activeVideo].slice(-24);
+        futureRef.current = [];
+      }
+      playVideo(result.video);
       setServerOnline(true);
     } catch {
       setServerOnline(false);
-      currentVideoRef.current = null;
-      setCurrentVideo(null);
+      playVideo(null);
     } finally {
       advancingRef.current = false;
     }
-  }, []);
+  }, [playVideo]);
+
+  const goBack = useCallback(() => {
+    const previousVideo = historyRef.current.pop();
+    if (!previousVideo) return;
+
+    const activeVideo = currentVideoRef.current;
+    if (activeVideo) futureRef.current.unshift(activeVideo);
+    playVideo(previousVideo);
+  }, [playVideo]);
+
+  const goForward = useCallback(() => {
+    const nextVideo = futureRef.current.shift();
+    if (nextVideo) {
+      const activeVideo = currentVideoRef.current;
+      if (activeVideo) historyRef.current.push(activeVideo);
+      playVideo(nextVideo);
+      return;
+    }
+
+    void advanceVideo(currentVideoRef.current?.id);
+  }, [advanceVideo, playVideo]);
 
   const refreshState = useCallback(async () => {
     try {
@@ -723,9 +778,12 @@ export default function Home() {
       if (queueTotal(state.queue) > 0) {
         const library = await api<LibraryState>("/api/library");
         setRendering(
-          library.submissions.filter((submission) =>
-            ACTIVE_STATUSES.includes(submission.status),
-          ),
+          library.submissions
+            .filter((submission) => ACTIVE_STATUSES.includes(submission.status))
+            .sort(
+              (first, second) =>
+                Date.parse(first.createdAt) - Date.parse(second.createdAt),
+            ),
         );
       } else {
         setRendering([]);
@@ -747,19 +805,76 @@ export default function Home() {
   }, [refreshState]);
 
   useEffect(() => {
+    const savedMode = window.localStorage.getItem(DISPLAY_MODE_STORAGE_KEY);
+    const restorePreference = window.setTimeout(() => {
+      if (savedMode === "framed") setDisplayMode("framed");
+      displayModeIsReadyRef.current = true;
+    }, 0);
+    return () => window.clearTimeout(restorePreference);
+  }, []);
+
+  useEffect(() => {
+    if (!displayModeIsReadyRef.current) return;
+    window.localStorage.setItem(DISPLAY_MODE_STORAGE_KEY, displayMode);
+  }, [displayMode]);
+
+  useEffect(() => {
     function keyboardShortcuts(event: KeyboardEvent) {
       if (
-        (event.metaKey || event.ctrlKey) &&
-        event.shiftKey &&
-        event.key.toLowerCase() === "l"
+        event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        event.key === "ArrowLeft"
       ) {
         event.preventDefault();
+        goBack();
+        return;
+      }
+
+      if (
+        event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        event.key === "ArrowRight"
+      ) {
+        event.preventDefault();
+        goForward();
+        return;
+      }
+
+      const libraryShortcut =
+        (event.altKey &&
+          !event.metaKey &&
+          !event.ctrlKey &&
+          event.code === "KeyL") ||
+        ((event.metaKey || event.ctrlKey) &&
+          event.shiftKey &&
+          event.code === "KeyL");
+      if (libraryShortcut) {
+        event.preventDefault();
         setLibraryOpen((open) => !open);
+        return;
+      }
+
+      const target = event.target as HTMLElement | null;
+      const isTyping =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        Boolean(target?.isContentEditable);
+      if (
+        event.key.toLowerCase() === "v" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !isTyping
+      ) {
+        event.preventDefault();
+        setDisplayMode((mode) => (mode === "full" ? "framed" : "full"));
       }
     }
     window.addEventListener("keydown", keyboardShortcuts);
     return () => window.removeEventListener("keydown", keyboardShortcuts);
-  }, []);
+  }, [goBack, goForward]);
 
   const pendingCount = useMemo(
     () => queueTotal(wallState.queue),
@@ -768,7 +883,7 @@ export default function Home() {
   const nowRendering = rendering[0];
 
   return (
-    <main className="wall">
+    <main className={`wall view-${displayMode}`}>
       <header className="masthead" aria-label="Black Forest Labs and Nous Research">
         <div className="lockup">
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -780,47 +895,77 @@ export default function Home() {
           <span className="lockup-x" aria-hidden="true">
             ×
           </span>
-          <span className="nous-mark">NOUS RESEARCH</span>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            className="nous-mark"
+            src="/nous-girl.webp"
+            alt="Nous Research"
+          />
         </div>
         <div className="masthead-status">
-          <span className={`live-dot ${serverOnline ? "" : "is-offline"}`} />
-          <span>{serverOnline ? "LIVE" : "OFFLINE"}</span>
-          <i aria-hidden="true" />
-          <span>{wallState.videoCount} FILMS</span>
-          {pendingCount > 0 && (
-            <>
+          <nav className="operator-controls" aria-label="Wall controls">
+            <div className="wall-presence">
+              <span className={`live-dot ${serverOnline ? "" : "is-offline"}`} />
+              <span>{serverOnline ? "LIVE" : "OFFLINE"}</span>
               <i aria-hidden="true" />
-              <span className="in-motion">{pendingCount} IN MOTION</span>
-            </>
-          )}
-          <button
-            className="library-key"
-            onClick={() => setLibraryOpen(true)}
-            aria-label="Open the reel library"
-          >
-            LIBRARY <kbd>⌘⇧L</kbd>
-          </button>
+              <span>{wallState.videoCount} FILMS</span>
+              {pendingCount > 0 && (
+                <span className="in-motion">{pendingCount} RENDERING</span>
+              )}
+            </div>
+            <button
+              className="view-key"
+              onClick={() =>
+                setDisplayMode((mode) => (mode === "full" ? "framed" : "full"))
+              }
+              aria-pressed={displayMode === "full"}
+              aria-label={`Switch to ${displayMode === "full" ? "framed" : "full"} view`}
+            >
+              {displayMode === "full" ? "FULL" : "FRAME"}
+            </button>
+            <button
+              className="library-key"
+              onClick={() => setLibraryOpen(true)}
+              aria-label="Open the reel library"
+            >
+              LIBRARY <kbd>⌥L</kbd>
+            </button>
+          </nav>
         </div>
       </header>
 
       <div className="stage">
         <AnimatePresence mode="wait">
           {currentVideo ? (
-            <motion.video
+            <motion.div
               key={`${currentVideo.id}-${videoKey}`}
-              className="film"
-              src={currentVideo.mediaUrl}
-              autoPlay
-              muted
-              playsInline
-              preload="auto"
-              onEnded={() => advanceVideo(currentVideo.id)}
-              onError={() => advanceVideo(currentVideo.id)}
+              className="film-stack"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
-            />
+            >
+              <video
+                className="film-glow"
+                src={currentVideo.mediaUrl}
+                autoPlay
+                muted
+                playsInline
+                preload="auto"
+                aria-hidden="true"
+                tabIndex={-1}
+              />
+              <video
+                className="film"
+                src={currentVideo.mediaUrl}
+                autoPlay
+                muted
+                playsInline
+                preload="auto"
+                onEnded={goForward}
+                onError={() => advanceVideo(currentVideo.id)}
+              />
+            </motion.div>
           ) : (
             <motion.div
               key="holding"
@@ -836,7 +981,7 @@ export default function Home() {
         </AnimatePresence>
       </div>
 
-      <div className="credit-rail" aria-live="polite">
+      <section className="credit-section" aria-label="Current film" aria-live="polite">
         <AnimatePresence mode="wait">
           {currentVideo && (
             <motion.div
@@ -849,7 +994,7 @@ export default function Home() {
             >
               <span className="credit-reel">REEL {reelCode(currentVideo.id)}</span>
               {currentVideo.prompt && (
-                <span className="credit-prompt ellipsis">
+                <span className="credit-prompt">
                   “{currentVideo.prompt}”
                 </span>
               )}
@@ -857,7 +1002,7 @@ export default function Home() {
                 FILM BY {currentVideo.name.toUpperCase()}
                 {currentVideo.source === "generated" &&
                   currentVideo.playCount <= 1 && (
-                    <em className="premiere"> — WORLD PREMIERE</em>
+                    <em className="premiere"> · WORLD PREMIERE</em>
                   )}
               </span>
             </motion.div>
@@ -865,11 +1010,11 @@ export default function Home() {
         </AnimatePresence>
         {nowRendering && (
           <span className="rendering-note">
-            NOW RENDERING — {nowRendering.name.toUpperCase()}
+            NOW RENDERING / {nowRendering.name.toUpperCase()}
             {rendering.length > 1 ? ` +${rendering.length - 1} MORE` : ""}
           </span>
         )}
-      </div>
+      </section>
 
       <Console
         providerConfigured={wallState.providerConfigured}
@@ -882,7 +1027,7 @@ export default function Home() {
         currentVideoId={currentVideo?.id}
         onSkip={() => {
           setLibraryOpen(false);
-          advanceVideo(currentVideo?.id);
+          goForward();
         }}
         onLibraryChanged={refreshState}
       />
