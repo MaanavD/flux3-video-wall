@@ -2,7 +2,11 @@
 
 ## Quick start
 
-1. Double-click **Launch FLUX 3 Wall.command** (Mac) or **Launch FLUX 3 Wall.bat** (Windows).
+**Mac:** the first launch needs one manual approval since this isn't a signed/notarized app — **right-click "Launch FLUX 3 Wall.command" → Open**, then click "Open" on the dialog. (Double-clicking directly will refuse to open the first time — that's macOS Gatekeeper, not a bug.) Every launch after that works with a normal double-click.
+
+**Windows:** double-click **Launch FLUX 3 Wall.bat**. If SmartScreen says "Windows protected your PC," click **More info → Run anyway** (same one-time-approval idea as Mac).
+
+1. Launch it (see above).
 2. First run: paste your BFL API key when prompted (get one at [api.bfl.ai](https://api.bfl.ai)). Press Enter to skip and add it later.
 3. Your browser opens the video wall. Type a prompt at the console at the bottom to generate a film.
 

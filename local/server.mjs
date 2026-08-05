@@ -25,11 +25,10 @@ const dbPath = join(dataDir, "wall.sqlite");
 const port = Number(process.env.LOCAL_API_PORT || 8788);
 const bflApiKey = process.env.BFL_API_KEY || "";
 const bflEndpoint =
-  process.env.BFL_MODEL_ENDPOINT ||
-  "https://api.bfl.ai/v1/flux-3-preview-optimized";
+  process.env.BFL_MODEL_ENDPOINT || "https://api.bfl.ai/v1/flux-3-video";
+const bflResolution = process.env.BFL_RESOLUTION === "fhd" ? "fhd" : "hd";
 const bflConcurrency = Number(
-  process.env.BFL_CONCURRENCY ||
-    (bflEndpoint.includes("optimized") ? 8 : 5),
+  process.env.BFL_CONCURRENCY || (bflResolution === "fhd" ? 5 : 8),
 );
 const bflVersion = process.env.BFL_MODEL_VERSION || "";
 
@@ -521,12 +520,12 @@ async function dispatchSubmission(submission) {
   updateSubmission(submission.id, { status: "submitting", error: null });
 
   const requestBody = {
+    mode: "t2v",
     prompt: submission.prompt,
     aspect_ratio: "16:9",
-    resolution: "720p",
+    resolution: bflResolution,
     duration: submission.duration,
     generate_audio: false,
-    grounding: false,
   };
   if (bflVersion) requestBody.version = bflVersion;
 
@@ -679,7 +678,7 @@ const server = createServer(async (request, response) => {
         .all();
       sendJson(response, 200, {
         providerConfigured: Boolean(bflApiKey),
-        endpoint: bflEndpoint.includes("optimized") ? "optimized" : "high",
+        endpoint: bflResolution === "fhd" ? "high" : "optimized",
         activeVideoIds: videos.map((video) => video.id),
         videoCount: videos.length,
         queue: Object.fromEntries(

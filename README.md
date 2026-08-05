@@ -60,15 +60,14 @@ The playlist uses shuffle rounds. Every active video is selected once in a rando
 
 ## Default generation request
 
-- Text to video only
+- Text to video only (`mode: t2v`)
 - 16:9
-- 720p
+- HD resolution
 - Audio off
-- Grounding off
 - User-selectable duration from 5 to 20 seconds
 - Default duration of 10 seconds
 
-The default endpoint is `flux-3-preview-optimized` with eight concurrent jobs. Change the endpoint and concurrency in `.env.local` to use `flux-3-preview-high` instead.
+Requests go to `https://api.bfl.ai/v1/flux-3-video` at `hd` resolution with eight concurrent jobs. Set `BFL_RESOLUTION=fhd` in `.env.local` for full-HD output (defaults to five concurrent jobs instead).
 
 ## Useful commands
 

@@ -8,7 +8,8 @@ if not exist .env.local (
   set /p BFL_KEY="Paste your BFL API key (or press Enter to skip for now): "
   (
     echo BFL_API_KEY=%BFL_KEY%
-    echo BFL_MODEL_ENDPOINT=https://api.bfl.ai/v1/flux-3-preview-optimized
+    echo BFL_MODEL_ENDPOINT=https://api.bfl.ai/v1/flux-3-video
+    echo BFL_RESOLUTION=hd
     echo BFL_CONCURRENCY=8
     echo LOCAL_API_PORT=8788
   ) > .env.local
