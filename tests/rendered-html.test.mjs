@@ -29,10 +29,9 @@ test("renders the FLUX 3 video wall shell", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>FLUX 3 \/ BFL × Nous Research<\/title>/i);
+  assert.match(html, /<title>FLUX 3 Video Wall \/ Black Forest Labs<\/title>/i);
   assert.match(html, /bfl-logotype-white\.svg/);
   assert.match(html, /Black Forest Labs/i);
-  assert.match(html, /NOUS RESEARCH/);
   assert.match(html, /01 YOUR NAME/);
   assert.match(html, /ROLL FILM/);
   assert.match(html, /Type a film/);

@@ -125,9 +125,7 @@ function HoldingScreen() {
     <div className="holding" aria-label="Waiting for the first film">
       <div className="holding-wash" />
       <div className="holding-inner">
-        <span className="holding-eyebrow">
-          BLACK FOREST LABS × NOUS RESEARCH / SAN FRANCISCO
-        </span>
+        <span className="holding-eyebrow">BLACK FOREST LABS / FLUX 3</span>
         <h1 className="holding-title">
           Type a film
           <br />
@@ -884,22 +882,13 @@ export default function Home() {
 
   return (
     <main className={`wall view-${displayMode}`}>
-      <header className="masthead" aria-label="Black Forest Labs and Nous Research">
+      <header className="masthead" aria-label="Black Forest Labs">
         <div className="lockup">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             className="bfl-mark"
             src="/bfl-logotype-white.svg"
             alt="Black Forest Labs"
-          />
-          <span className="lockup-x" aria-hidden="true">
-            ×
-          </span>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            className="nous-mark"
-            src="/nous-girl.webp"
-            alt="Nous Research"
           />
         </div>
         <div className="masthead-status">

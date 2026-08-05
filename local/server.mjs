@@ -138,7 +138,7 @@ async function scanSeedVideos() {
       id,
       fileName,
       absolutePath,
-      String(entry?.name || "BFL × Nous").slice(0, 40),
+      String(entry?.name || "Black Forest Labs").slice(0, 40),
       String(entry?.prompt || "").slice(0, 500),
       Number(entry?.duration) || null,
       nowIso(),

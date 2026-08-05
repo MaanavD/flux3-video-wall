@@ -48,3 +48,4 @@ next-env.d.ts
 /data/trash/*
 !/data/trash/.gitkeep
 /data/seed-videos/*.mp4
+/archive/

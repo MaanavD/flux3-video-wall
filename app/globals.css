@@ -17,10 +17,9 @@
 }
 
 /*
-  BFL × NOUS — FLUX 3 video wall.
-  BFL side: projector black, pristine video, lavender on the action moment.
-  Nous side: cyanotype-blue lab annotations, typewriter mono, dashed rules,
-  Times serif caps.
+  FLUX 3 video wall.
+  Projector black, pristine video, lavender on the action moment.
+  Cyanotype-blue lab annotations, typewriter mono, dashed rules, Times serif caps.
 */
 
 :root {
@@ -121,26 +120,6 @@ kbd {
   display: block;
   align-self: center;
   opacity: 0.96;
-}
-
-.lockup-x {
-  color: var(--blue-bright);
-  font-family: var(--sans);
-  font-size: 22px;
-  font-weight: 400;
-  line-height: 1;
-  align-self: center;
-}
-
-.nous-mark {
-  display: block;
-  width: 36px;
-  height: 36px;
-  align-self: center;
-  object-fit: cover;
-  border: 1px solid rgba(255, 255, 255, 0.72);
-  border-radius: 6px;
-  background: white;
 }
 
 .masthead-status {
