@@ -534,7 +534,7 @@ async function dispatchSubmission(submission) {
     aspect_ratio: "16:9",
     resolution: bflResolution,
     duration: submission.duration,
-    generate_audio: false,
+    generate_audio: true,
   };
   if (bflVersion) requestBody.version = bflVersion;
 

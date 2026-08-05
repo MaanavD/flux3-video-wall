@@ -63,7 +63,7 @@ The playlist uses shuffle rounds. Every active video is selected once in a rando
 - Text to video only (`mode: t2v`)
 - 16:9
 - HD resolution
-- Audio off
+- Audio on (synchronized generation) — the wall stays muted until the first keystroke or tap, since browsers block unmuted autoplay before a user gesture
 - User-selectable duration from 5 to 20 seconds
 - Default duration of 10 seconds
 
