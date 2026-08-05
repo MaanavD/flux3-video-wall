@@ -208,6 +208,14 @@ function toPublicSubmission(row) {
   };
 }
 
+// file_path is stored for reference but not trusted for reads: it's an
+// absolute path from wherever the row was created, which breaks the moment
+// this folder is copied or moved to a different machine or location. The
+// current, correct location is always derivable from file_name + source.
+function resolveVideoPath(row) {
+  return join(row.source === "seed" ? seedDir : videoDir, row.file_name);
+}
+
 function activeVideoRows() {
   return db
     .prepare(
@@ -279,7 +287,7 @@ async function moveVideoToTrash(id) {
   const trashPath = join(trashDir, trashName);
 
   try {
-    await rename(video.file_path, trashPath);
+    await rename(resolveVideoPath(video), trashPath);
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
@@ -301,9 +309,10 @@ async function streamVideo(request, response, id) {
     return;
   }
 
+  const videoPath = resolveVideoPath(video);
   let fileStats;
   try {
-    fileStats = await stat(video.file_path);
+    fileStats = await stat(videoPath);
   } catch {
     sendJson(response, 404, { error: "Video file is missing" });
     return;
@@ -320,7 +329,7 @@ async function streamVideo(request, response, id) {
         "Cache-Control": "private, max-age=3600",
       }),
     );
-    createReadStream(video.file_path).pipe(response);
+    createReadStream(videoPath).pipe(response);
     return;
   }
 
@@ -346,7 +355,7 @@ async function streamVideo(request, response, id) {
       "Cache-Control": "private, max-age=3600",
     }),
   );
-  createReadStream(video.file_path, { start, end }).pipe(response);
+  createReadStream(videoPath, { start, end }).pipe(response);
 }
 
 function updateSubmission(id, fields) {
