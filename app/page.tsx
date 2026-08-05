@@ -699,6 +699,7 @@ export default function Home() {
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("full");
   const [videoKey, setVideoKey] = useState(0);
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
   const currentVideoRef = useRef<WallVideo | null>(null);
   const historyRef = useRef<WallVideo[]>([]);
   const futureRef = useRef<WallVideo[]>([]);
@@ -801,6 +802,23 @@ export default function Home() {
       window.clearInterval(interval);
     };
   }, [refreshState]);
+
+  useEffect(() => {
+    // Browsers block unmuted autoplay until a real user gesture happens.
+    // The first keystroke or tap anywhere (a guest walking up to the
+    // console) counts, so unmute from then on for the rest of the session.
+    function unlock() {
+      setAudioUnlocked(true);
+      window.removeEventListener("keydown", unlock);
+      window.removeEventListener("pointerdown", unlock);
+    }
+    window.addEventListener("keydown", unlock);
+    window.addEventListener("pointerdown", unlock);
+    return () => {
+      window.removeEventListener("keydown", unlock);
+      window.removeEventListener("pointerdown", unlock);
+    };
+  }, []);
 
   useEffect(() => {
     const savedMode = window.localStorage.getItem(DISPLAY_MODE_STORAGE_KEY);
@@ -948,7 +966,7 @@ export default function Home() {
                 className="film"
                 src={currentVideo.mediaUrl}
                 autoPlay
-                muted
+                muted={!audioUnlocked}
                 playsInline
                 preload="auto"
                 onEnded={goForward}
