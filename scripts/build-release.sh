@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Assembles a double-click, no-npm-required release bundle.
-# Usage: scripts/build-release.sh <mac-arm64|win-x64>
+# Usage: scripts/build-release.sh <mac-arm64|win-x64|linux-x64|linux-arm64>
 set -euo pipefail
 
-PLATFORM="${1:?usage: build-release.sh <mac-arm64|win-x64|linux-x64>}"
+PLATFORM="${1:?usage: build-release.sh <mac-arm64|win-x64|linux-x64|linux-arm64>}"
 NODE_VERSION="22.23.2"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE="$ROOT/.release-cache"
@@ -47,8 +47,20 @@ case "$PLATFORM" in
     NODE_URL="https://nodejs.org/dist/v$NODE_VERSION/$NODE_ARCHIVE.tar.xz"
     NODE_BIN_IN_ARCHIVE="$NODE_ARCHIVE/bin/node"
     ;;
+  linux-arm64)
+    LINUX_ARM_NM_DIR="$CACHE/linux-arm64-deps"
+    mkdir -p "$LINUX_ARM_NM_DIR"
+    cp "$ROOT/package.json" "$LINUX_ARM_NM_DIR/"
+    [ -f "$ROOT/package-lock.json" ] && cp "$ROOT/package-lock.json" "$LINUX_ARM_NM_DIR/"
+    echo "==> Installing Linux/arm64 node_modules (cross-platform, untested at runtime)"
+    (cd "$LINUX_ARM_NM_DIR" && npm install --os=linux --cpu=arm64 --libc=glibc --ignore-scripts)
+    NODE_MODULES_SRC="$LINUX_ARM_NM_DIR/node_modules"
+    NODE_ARCHIVE="node-v$NODE_VERSION-linux-arm64"
+    NODE_URL="https://nodejs.org/dist/v$NODE_VERSION/$NODE_ARCHIVE.tar.xz"
+    NODE_BIN_IN_ARCHIVE="$NODE_ARCHIVE/bin/node"
+    ;;
   *)
-    echo "Unknown platform: $PLATFORM (expected mac-arm64, win-x64, or linux-x64)" >&2
+    echo "Unknown platform: $PLATFORM (expected mac-arm64, win-x64, linux-x64, or linux-arm64)" >&2
     exit 1
     ;;
 esac
@@ -66,6 +78,13 @@ cp "$ROOT/data/seed-videos/manifest.json" "$OUT/app/data/seed-videos/"
 cp "$ROOT"/data/seed-videos/*.mp4 "$OUT/app/data/seed-videos/"
 touch "$OUT/app/data/videos/.gitkeep" "$OUT/app/data/trash/.gitkeep"
 
+if [ "${INCLUDE_FULL_ARCHIVE:-}" = "1" ]; then
+  echo "==> Including full video archive (data/videos + data/trash)"
+  cp "$ROOT"/data/videos/*.mp4 "$OUT/app/data/videos/" 2>/dev/null || true
+  cp "$ROOT"/data/trash/*.mp4 "$OUT/app/data/trash/" 2>/dev/null || true
+  cp -R "$ROOT/data/wall.sqlite" "$OUT/app/data/wall.sqlite" 2>/dev/null || true
+fi
+
 echo "==> Fetching portable Node $NODE_VERSION for $PLATFORM"
 NODE_LOCAL_ARCHIVE="$CACHE/$(basename "$NODE_URL")"
 [ -f "$NODE_LOCAL_ARCHIVE" ] || curl -sL "$NODE_URL" -o "$NODE_LOCAL_ARCHIVE"
@@ -80,7 +99,7 @@ case "$PLATFORM" in
     unzip -oq "$NODE_LOCAL_ARCHIVE" "$NODE_BIN_IN_ARCHIVE" -d "$CACHE"
     cp "$CACHE/$NODE_BIN_IN_ARCHIVE" "$OUT/app/node.exe"
     ;;
-  linux-x64)
+  linux-x64 | linux-arm64)
     tar -xJf "$NODE_LOCAL_ARCHIVE" -C "$CACHE" "$NODE_BIN_IN_ARCHIVE"
     cp "$CACHE/$NODE_BIN_IN_ARCHIVE" "$OUT/app/node"
     chmod +x "$OUT/app/node"
@@ -96,7 +115,7 @@ case "$PLATFORM" in
   win-x64)
     cp "$ROOT/scripts/launch-windows.bat" "$OUT/Launch FLUX 3 Wall.bat"
     ;;
-  linux-x64)
+  linux-x64 | linux-arm64)
     cp "$ROOT/scripts/launch-linux.sh" "$OUT/launch.sh"
     chmod +x "$OUT/launch.sh"
     ;;
