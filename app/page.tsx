@@ -107,7 +107,7 @@ function friendlyStatus(status: string, error?: string | null) {
     needs_review: "NEEDS REVIEW",
   };
   if (status === "failed" && error?.startsWith("Render timed out")) {
-    return "FAILED / LIKELY COPYRIGHTED";
+    return "TIMED OUT";
   }
   return labels[status] || status.replaceAll("_", " ").toUpperCase();
 }
@@ -660,6 +660,7 @@ function LibraryDialog({
                       className={`lib-status status-${submission.status}`}
                     >
                       {friendlyStatus(submission.status, submission.error)}
+                      {submission.error && <small role="status">{submission.error}</small>}
                     </span>
                     {["failed", "moderated", "needs_review"].includes(
                       submission.status,
