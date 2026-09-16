@@ -42,11 +42,24 @@ type WallState = {
   endpoint: "high" | "optimized";
   activeVideoIds: string[];
   videoCount: number;
+  recentWindow: number;
   queue: Record<string, number>;
 };
 
 type DisplayMode = "full" | "framed";
 const DISPLAY_MODE_STORAGE_KEY = "flux-video-wall-display-mode";
+
+// "rotation" shows every film in shuffle rounds. "latest" puts the newest
+// films first, so a guest sees their own premiere without sitting through
+// the whole wall. The feed rides along with it as the running order.
+type PlaybackMode = "rotation" | "latest";
+const PLAYBACK_MODE_STORAGE_KEY = "flux-video-wall-playback-mode";
+const FEED_LIMIT = 10;
+
+type FeedState = {
+  films: WallVideo[];
+  pending: Submission[];
+};
 
 type LibraryState = {
   videos: WallVideo[];
@@ -59,6 +72,7 @@ const EMPTY_STATE: WallState = {
   endpoint: "optimized",
   activeVideoIds: [],
   videoCount: 0,
+  recentWindow: 6,
   queue: {},
 };
 
@@ -110,6 +124,18 @@ function friendlyStatus(status: string, error?: string | null) {
     return "FAILED / LIKELY COPYRIGHTED";
   }
   return labels[status] || status.replaceAll("_", " ").toUpperCase();
+}
+
+const FAILED_STATUSES = ["failed", "moderated", "needs_review"];
+
+function timeAgo(iso: string) {
+  const elapsed = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(elapsed) || elapsed < 60_000) return "JUST NOW";
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 60) return `${minutes} MIN AGO`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours} H AGO`;
+  return `${Math.floor(hours / 24)} D AGO`;
 }
 
 function reelCode(id: string) {
@@ -180,12 +206,21 @@ function Console({
     window.setTimeout(attempt, 50);
   }, []);
 
+  // The console holds onto the name between films, so a second prompt starts
+  // at the film field. This reset — a long silence at the wall — is what
+  // forgets it, so the next guest never submits under someone else's name.
   const reset = useCallback(() => {
     setStage("name");
     setName("");
     setPrompt("");
     setDurationIndex(1);
     setNotice(null);
+    focusStage("name");
+  }, [focusStage]);
+
+  const changeName = useCallback(() => {
+    setNotice(null);
+    setStage("name");
     focusStage("name");
   }, [focusStage]);
 
@@ -269,10 +304,10 @@ function Console({
       onSubmitted();
       window.setTimeout(() => {
         setTicket(null);
-        focusStage("name");
+        focusStage("prompt");
       }, 6_000);
-      setStage("name");
-      setName("");
+      // The name stays stamped on the console for the next film.
+      setStage("prompt");
       setPrompt("");
       setDurationIndex(1);
       setNotice(null);
@@ -328,6 +363,10 @@ function Console({
                 ? "IT PREMIERES ON THIS WALL IN 3–10 MINUTES"
                 : "QUEUED LOCALLY UNTIL THE WALL GOES LIVE"}
             </span>
+            <span className="ticket-hint">
+              STILL {ticket.name.toUpperCase()} · TYPE THE NEXT FILM STRAIGHT
+              AWAY · ESC TO CHANGE THE NAME
+            </span>
           </motion.div>
         ) : (
           <motion.div
@@ -337,7 +376,10 @@ function Console({
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
           >
-            <div className={`console-field ${stage === "name" ? "is-live" : name ? "is-stamped" : "is-idle"}`}>
+            <div
+              className={`console-field ${stage === "name" ? "is-live" : name ? "is-stamped" : "is-idle"}`}
+              onClick={stage === "name" ? undefined : changeName}
+            >
               <span className="field-tag">01 YOUR NAME</span>
               {stage === "name" ? (
                 <input
@@ -348,6 +390,7 @@ function Console({
                   autoComplete="off"
                   spellCheck={false}
                   placeholder="who's directing?"
+                  onFocus={(event) => event.currentTarget.select()}
                   onChange={(event) => setName(event.target.value.slice(0, 40))}
                   onKeyDown={(event) => {
                     if (event.key === "Escape") {
@@ -360,7 +403,12 @@ function Console({
                   }}
                 />
               ) : (
-                <span className="field-stamp">{name.toUpperCase()}</span>
+                <span className="field-stamp">
+                  {name.toUpperCase()}
+                  {stage === "prompt" && (
+                    <em className="field-change">ESC TO CHANGE</em>
+                  )}
+                </span>
               )}
             </div>
 
@@ -386,8 +434,7 @@ function Console({
                       (event.key === "Backspace" && prompt.length === 0)
                     ) {
                       event.preventDefault();
-                      setStage("name");
-                      focusStage("name");
+                      changeName();
                     }
                   }}
                 />
@@ -439,8 +486,9 @@ function Console({
           <span className="hint-keys">
             {stage === "name"
               ? "ESC TO UNFOCUS · TAB TO RETURN"
-              : "ENTER TO CONTINUE · ESC TO GO BACK"}
-            {stage === "duration" ? " · ←/→ TO CHOOSE" : ""}
+              : stage === "prompt"
+                ? "ENTER TO CONTINUE · ESC TO CHANGE THE NAME"
+                : "ENTER TO ROLL · ESC TO GO BACK · ←/→ TO CHOOSE"}
           </span>
         )}
         <span className="hint-brand">FLUX 3 / TEXT TO VIDEO</span>
@@ -688,6 +736,100 @@ function LibraryDialog({
 }
 
 /* ---------------------------------- */
+/* Latest-first feed                  */
+/* ---------------------------------- */
+
+function FilmFeed({
+  films,
+  pending,
+  currentVideoId,
+  recentWindow,
+  onPlay,
+  onClose,
+}: {
+  films: WallVideo[];
+  pending: Submission[];
+  currentVideoId?: string;
+  recentWindow: number;
+  onPlay: (video: WallVideo) => void;
+  onClose: () => void;
+}) {
+  return (
+    <aside className="film-feed" aria-label="Latest films" aria-live="polite">
+      <header className="feed-head">
+        <span className="feed-kicker">LATEST FIRST</span>
+        <button
+          className="feed-close"
+          onClick={onClose}
+          aria-label="Hide the feed"
+        >
+          HIDE
+        </button>
+        <span className="feed-sub">
+          NEWEST {recentWindow} ON ROTATION · A NEW FILM PLAYS NEXT
+        </span>
+      </header>
+
+      {pending.length || films.length ? (
+        <ol className="feed-list">
+          {pending.map((submission) => (
+            <li
+              key={submission.id}
+              className={`feed-row is-pending ${
+                FAILED_STATUSES.includes(submission.status) ? "is-failed" : ""
+              }`}
+            >
+              <span className="feed-line">
+                <strong>{submission.name.toUpperCase()}</strong>
+                <span className="feed-status">
+                  {friendlyStatus(submission.status, submission.error)}
+                </span>
+              </span>
+              <span className="feed-prompt ellipsis">{submission.prompt}</span>
+              <span className="feed-time">{timeAgo(submission.createdAt)}</span>
+            </li>
+          ))}
+          {films.map((video) => {
+            const onScreen = video.id === currentVideoId;
+            return (
+              <li
+                key={video.id}
+                className={`feed-row ${onScreen ? "is-live" : ""}`}
+              >
+                <button
+                  type="button"
+                  className="feed-play"
+                  onClick={() => onPlay(video)}
+                  disabled={onScreen}
+                >
+                  <span className="feed-line">
+                    <strong>{video.name.toUpperCase()}</strong>
+                    <span className="feed-status">
+                      {onScreen ? "ON SCREEN" : `REEL ${reelCode(video.id)}`}
+                    </span>
+                  </span>
+                  <span className="feed-prompt ellipsis">
+                    {video.prompt || "From the opening-night collection"}
+                  </span>
+                  <span className="feed-time">
+                    {timeAgo(video.createdAt)}
+                    {onScreen ? "" : " · PLAY NOW"}
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      ) : (
+        <p className="feed-empty">
+          Films appear here the moment someone types one.
+        </p>
+      )}
+    </aside>
+  );
+}
+
+/* ---------------------------------- */
 /* The wall                           */
 /* ---------------------------------- */
 
@@ -698,6 +840,9 @@ export default function Home() {
   const [serverOnline, setServerOnline] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("full");
+  const [playbackMode, setPlaybackMode] = useState<PlaybackMode>("rotation");
+  const [feedOpen, setFeedOpen] = useState(true);
+  const [feed, setFeed] = useState<FeedState>({ films: [], pending: [] });
   const [videoKey, setVideoKey] = useState(0);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
   const currentVideoRef = useRef<WallVideo | null>(null);
@@ -705,6 +850,10 @@ export default function Home() {
   const futureRef = useRef<WallVideo[]>([]);
   const advancingRef = useRef(false);
   const displayModeIsReadyRef = useRef(false);
+  // The wall asks for the next film from callbacks that must stay stable, so
+  // the live mode travels in a ref rather than in their dependencies.
+  const playbackModeRef = useRef<PlaybackMode>("rotation");
+  const playbackModeIsReadyRef = useRef(false);
 
   const playVideo = useCallback((video: WallVideo | null) => {
     currentVideoRef.current = video;
@@ -712,7 +861,7 @@ export default function Home() {
     setVideoKey((key) => key + 1);
   }, []);
 
-  const advanceVideo = useCallback(async (excludeId?: string) => {
+  const advanceVideo = useCallback(async (excludeId?: string, videoId?: string) => {
     if (advancingRef.current) return;
     advancingRef.current = true;
     try {
@@ -720,7 +869,11 @@ export default function Home() {
         "/api/videos/next",
         {
           method: "POST",
-          body: JSON.stringify({ excludeId }),
+          body: JSON.stringify({
+            excludeId,
+            videoId,
+            mode: playbackModeRef.current,
+          }),
         },
       );
       const activeVideo = currentVideoRef.current;
@@ -758,6 +911,35 @@ export default function Home() {
 
     void advanceVideo(currentVideoRef.current?.id);
   }, [advanceVideo, playVideo]);
+
+  const playFilm = useCallback(
+    (video: WallVideo) => {
+      if (video.id === currentVideoRef.current?.id) return;
+      void advanceVideo(currentVideoRef.current?.id, video.id);
+    },
+    [advanceVideo],
+  );
+
+  const refreshFeed = useCallback(async () => {
+    try {
+      setFeed(await api<FeedState>(`/api/feed?limit=${FEED_LIMIT}`));
+    } catch {
+      /* the wall keeps showing the last feed it received */
+    }
+  }, []);
+
+  const togglePlaybackMode = useCallback(() => {
+    const next = playbackModeRef.current === "rotation" ? "latest" : "rotation";
+    playbackModeRef.current = next;
+    setPlaybackMode(next);
+    if (next === "latest") {
+      // Not waiting is the whole point of the mode: jump to the newest film
+      // instead of finishing the round first.
+      setFeedOpen(true);
+      void refreshFeed();
+      void advanceVideo(currentVideoRef.current?.id);
+    }
+  }, [advanceVideo, refreshFeed]);
 
   const refreshState = useCallback(async () => {
     try {
@@ -835,6 +1017,33 @@ export default function Home() {
   }, [displayMode]);
 
   useEffect(() => {
+    const savedMode = window.localStorage.getItem(PLAYBACK_MODE_STORAGE_KEY);
+    const restorePreference = window.setTimeout(() => {
+      if (savedMode === "latest") {
+        playbackModeRef.current = "latest";
+        setPlaybackMode("latest");
+      }
+      playbackModeIsReadyRef.current = true;
+    }, 0);
+    return () => window.clearTimeout(restorePreference);
+  }, []);
+
+  useEffect(() => {
+    if (!playbackModeIsReadyRef.current) return;
+    window.localStorage.setItem(PLAYBACK_MODE_STORAGE_KEY, playbackMode);
+  }, [playbackMode]);
+
+  useEffect(() => {
+    if (playbackMode !== "latest" || !feedOpen) return;
+    const initial = window.setTimeout(() => void refreshFeed(), 0);
+    const interval = window.setInterval(() => void refreshFeed(), 4_000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+    };
+  }, [playbackMode, feedOpen, refreshFeed]);
+
+  useEffect(() => {
     function keyboardShortcuts(event: KeyboardEvent) {
       if (
         event.metaKey &&
@@ -855,6 +1064,20 @@ export default function Home() {
       ) {
         event.preventDefault();
         goForward();
+        return;
+      }
+
+      const modeShortcut =
+        (event.altKey &&
+          !event.metaKey &&
+          !event.ctrlKey &&
+          event.code === "KeyM") ||
+        ((event.metaKey || event.ctrlKey) &&
+          event.shiftKey &&
+          event.code === "KeyM");
+      if (modeShortcut) {
+        event.preventDefault();
+        togglePlaybackMode();
         return;
       }
 
@@ -890,7 +1113,7 @@ export default function Home() {
     }
     window.addEventListener("keydown", keyboardShortcuts);
     return () => window.removeEventListener("keydown", keyboardShortcuts);
-  }, [goBack, goForward]);
+  }, [goBack, goForward, togglePlaybackMode]);
 
   const pendingCount = useMemo(
     () => queueTotal(wallState.queue),
@@ -920,6 +1143,19 @@ export default function Home() {
                 <span className="in-motion">{pendingCount} RENDERING</span>
               )}
             </div>
+            <button
+              className="mode-key"
+              onClick={togglePlaybackMode}
+              aria-pressed={playbackMode === "latest"}
+              aria-label={
+                playbackMode === "latest"
+                  ? `Playing the newest ${wallState.recentWindow} films first. Switch to the full rotation.`
+                  : "Playing every film in rotation. Switch to the newest films first."
+              }
+            >
+              {playbackMode === "latest" ? "LATEST" : "ALL FILMS"}{" "}
+              <kbd>⌥M</kbd>
+            </button>
             <button
               className="view-key"
               onClick={() =>
@@ -988,6 +1224,17 @@ export default function Home() {
         </AnimatePresence>
       </div>
 
+      {playbackMode === "latest" && feedOpen && (
+        <FilmFeed
+          films={feed.films}
+          pending={feed.pending}
+          currentVideoId={currentVideo?.id}
+          recentWindow={wallState.recentWindow}
+          onPlay={playFilm}
+          onClose={() => setFeedOpen(false)}
+        />
+      )}
+
       <section className="credit-section" aria-label="Current film" aria-live="polite">
         <AnimatePresence mode="wait">
           {currentVideo && (
@@ -1025,7 +1272,10 @@ export default function Home() {
 
       <Console
         providerConfigured={wallState.providerConfigured}
-        onSubmitted={refreshState}
+        onSubmitted={() => {
+          void refreshState();
+          void refreshFeed();
+        }}
       />
 
       <LibraryDialog

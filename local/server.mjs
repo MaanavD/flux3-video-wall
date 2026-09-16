@@ -14,6 +14,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { DatabaseSync } from "node:sqlite";
 import { generationTimeoutMs, shouldExpireGeneration } from "./queue-policy.mjs";
+import { DEFAULT_RECENT_WINDOW, selectVideo } from "./playlist.mjs";
 
 const localDir = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(localDir, "..");
@@ -31,6 +32,11 @@ const bflConcurrency = Number(
   process.env.BFL_CONCURRENCY || (bflResolution === "fhd" ? 5 : 8),
 );
 const bflVersion = process.env.BFL_MODEL_VERSION || "";
+// How many of the newest films the "latest" playback mode cycles through.
+const recentWindow = Math.max(
+  1,
+  Number(process.env.WALL_RECENT_WINDOW) || DEFAULT_RECENT_WINDOW,
+);
 
 await Promise.all(
   [dataDir, videoDir, seedDir, trashDir].map((path) =>
@@ -226,56 +232,17 @@ function activeVideoRows() {
     .all();
 }
 
-function selectNextVideo(excludeId) {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    let cycle = Number(
-      db
-        .prepare("SELECT value FROM app_meta WHERE key = 'playlist_cycle'")
-        .get().value,
-    );
-
-    const pick = (allowExcluded) =>
-      db
-        .prepare(
-          `SELECT * FROM videos
-           WHERE is_active = 1
-             AND last_cycle < ?
-             ${allowExcluded ? "" : "AND id != ?"}
-           ORDER BY RANDOM()
-           LIMIT 1`,
-        )
-        .get(...(allowExcluded ? [cycle] : [cycle, excludeId || ""]));
-
-    let video = pick(false) || pick(true);
-    if (!video) {
-      const activeCount = db
-        .prepare("SELECT COUNT(*) AS count FROM videos WHERE is_active = 1")
-        .get().count;
-      if (!activeCount) {
-        db.exec("COMMIT");
-        return null;
-      }
-
-      cycle += 1;
-      db.prepare(
-        "UPDATE app_meta SET value = ? WHERE key = 'playlist_cycle'",
-      ).run(String(cycle));
-      video = pick(false) || pick(true);
-    }
-
-    db.prepare(
-      `UPDATE videos
-       SET last_cycle = ?, play_count = play_count + 1
-       WHERE id = ?`,
-    ).run(cycle, video.id);
-    db.exec("COMMIT");
-    return { ...video, play_count: video.play_count + 1 };
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
-}
+const IN_FLIGHT_STATUSES = [
+  "queued",
+  "submitting",
+  "pending",
+  "reasoning",
+  "generating",
+  "downloading",
+];
+// Failures stay in the guest feed for a short while: a film that simply
+// vanished is the one thing nobody in the room can explain.
+const FEED_FAILURE_WINDOW_MS = 15 * 60_000;
 
 async function moveVideoToTrash(id) {
   const video = db
@@ -690,6 +657,7 @@ const server = createServer(async (request, response) => {
         endpoint: bflResolution === "fhd" ? "high" : "optimized",
         activeVideoIds: videos.map((video) => video.id),
         videoCount: videos.length,
+        recentWindow,
         queue: Object.fromEntries(
           statusRows.map((row) => [row.status, row.count]),
         ),
@@ -759,10 +727,48 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && path === "/api/videos/next") {
       const body = await readJson(request);
-      const video = selectNextVideo(String(body.excludeId || ""));
+      const video = selectVideo(db, {
+        mode: body.mode === "latest" ? "latest" : "rotation",
+        excludeId: String(body.excludeId || ""),
+        videoId: String(body.videoId || ""),
+        recentWindow,
+      });
       sendJson(response, 200, {
         video: video ? toPublicVideo(video) : null,
       });
+      return;
+    }
+
+    if (request.method === "GET" && path === "/api/feed") {
+      const limit = Math.min(
+        24,
+        Math.max(1, Number(url.searchParams.get("limit")) || 12),
+      );
+      const films = db
+        .prepare(
+          `SELECT * FROM videos
+           WHERE is_active = 1
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?`,
+        )
+        .all(limit)
+        .map(toPublicVideo);
+      const pending = db
+        .prepare(
+          `SELECT * FROM submissions
+           WHERE status IN (${IN_FLIGHT_STATUSES.map(() => "?").join(", ")})
+              OR (status IN ('failed', 'moderated', 'needs_review')
+                  AND updated_at >= ?)
+           ORDER BY created_at DESC
+           LIMIT ?`,
+        )
+        .all(
+          ...IN_FLIGHT_STATUSES,
+          new Date(Date.now() - FEED_FAILURE_WINDOW_MS).toISOString(),
+          limit,
+        )
+        .map(toPublicSubmission);
+      sendJson(response, 200, { films, pending });
       return;
     }
 

@@ -42,11 +42,16 @@ stages: name, film, length.
 - Typing anywhere lands in the current field. People just walk up and type.
 - `Enter` (or `Tab`) moves to the next stage. `Esc` (or `Backspace` on an
   empty field) goes back.
+- The name is typed once. After a film is sent the console keeps it stamped on
+  and reopens at the film field, so a second prompt takes one line of typing.
+  `Esc` from the film field (or a click on the name) changes it.
 - On the length stage, arrow keys pick 5 / 10 / 15 / 20 seconds and `Enter`
-  submits ("ROLL FILM"). A printed ticket confirms and the console resets.
+  submits ("ROLL FILM"). A printed ticket confirms, then the console returns to
+  the film field with the name still on it.
 - A half-finished entry clears itself after 90 seconds of no typing.
 - Press `Control + Shift + L` or `Command + Shift + L` to toggle the operator
   library. Arrow keys switch tabs, `S` skips the current film, `Esc` closes.
+- Press `Control + Shift + M` or `Command + Shift + M` to switch playback mode.
 - Delete moves an MP4 into `data/trash` and removes it from playback.
 
 ## Local data
@@ -56,7 +61,27 @@ stages: name, film, length.
 - `data/seed-videos` stores the starting collection.
 - `data/trash` stores videos removed through the interface.
 
-The playlist uses shuffle rounds. Every active video is selected once in a random order before the next round begins. New videos join the current round, so they appear without causing older videos to be overplayed.
+## Playback modes
+
+The button in the top-right switches how the wall chooses what plays next
+(`Control + Shift + M`, or `Option + M`). The choice is remembered on this
+laptop.
+
+- **ALL FILMS** is the house playlist: shuffle rounds where every active video
+  is selected once in a random order before the next round begins. New videos
+  join the current round, so they appear without causing older videos to be
+  overplayed.
+- **LATEST** puts the newest films first. A film that finishes rendering plays
+  next instead of waiting out the round, so the person who typed it sees it
+  within a film or two. It cycles the newest six rather than looping one file,
+  so the wall keeps moving in a quiet room. Set `WALL_RECENT_WINDOW` in
+  `.env.local` to change how many that is.
+
+LATEST also opens a feed down the right-hand side: films still rendering, then
+the most recent ones, newest at the top. Clicking any film plays it
+immediately. Renders that fail or get moderated stay in the feed for fifteen
+minutes so nobody is left wondering where their film went. `HIDE` closes the
+feed; switching modes brings it back.
 
 ## Default generation request
 
@@ -68,6 +93,9 @@ The playlist uses shuffle rounds. Every active video is selected once in a rando
 - Default duration of 10 seconds
 
 Requests go to `https://api.bfl.ai/v1/flux-3-video` at `hd` resolution with eight concurrent jobs. Set `BFL_RESOLUTION=fhd` in `.env.local` for full-HD output (defaults to five concurrent jobs instead).
+
+Set `WALL_RECENT_WINDOW` in `.env.local` to change how many of the newest films
+the LATEST mode cycles through. It defaults to six.
 
 ## Useful commands
 
