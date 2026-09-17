@@ -130,42 +130,6 @@ kbd {
   color: var(--dim);
 }
 
-.wall-presence {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-right: 1px solid rgba(126, 167, 238, 0.24);
-  white-space: nowrap;
-}
-
-.wall-presence i {
-  width: 1px;
-  height: 13px;
-  margin: 0 2px;
-  background: rgba(126, 167, 238, 0.3);
-}
-
-.live-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--blue-bright);
-  box-shadow: 0 0 8px rgba(126, 167, 238, 0.8);
-  animation: pulse 2.4s ease-in-out infinite;
-}
-
-.live-dot.is-offline {
-  background: var(--alert);
-  box-shadow: none;
-  animation: none;
-}
-
-.in-motion {
-  color: var(--blue-bright);
-  padding-left: 3px;
-}
-
 .operator-controls {
   display: flex;
   align-items: stretch;
@@ -590,6 +554,11 @@ kbd {
   cursor: default;
 }
 
+.console-field.is-stamped,
+.console-field.is-idle:not(.duration) {
+  cursor: pointer;
+}
+
 .duration-options {
   display: flex;
   gap: 8px;
@@ -602,10 +571,19 @@ kbd {
   color: var(--dim);
   border: 1px dashed transparent;
   border-radius: 3px;
+  background: none;
+  font-family: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
   transition:
     color 0.15s ease,
     border-color 0.15s ease,
     background 0.15s ease;
+}
+
+.duration-options [role="radio"]:hover {
+  color: var(--bone);
+  border-color: var(--blue-dashed);
 }
 
 .duration-options [role="radio"].is-chosen {
@@ -625,15 +603,31 @@ kbd {
 .console-go {
   display: flex;
   align-items: flex-end;
-  padding-bottom: 8px;
+  padding: 0 0 8px;
   gap: 14px;
+  border: none;
+  background: none;
   color: rgba(115, 125, 143, 0.5);
+  font-family: inherit;
   font-size: 17px;
   letter-spacing: 0.2em;
   white-space: nowrap;
+  cursor: pointer;
   transition:
     color 0.25s ease,
     text-shadow 0.25s ease;
+}
+
+.console-go:hover:not(:disabled) {
+  color: var(--lavender);
+}
+
+.console-go:hover:not(:disabled) kbd {
+  border-color: var(--lavender);
+}
+
+.console-go:disabled {
+  cursor: wait;
 }
 
 .console-go kbd {
@@ -1308,12 +1302,61 @@ kbd {
 }
 
 /* ---------------------------------- */
+/* Cinema (fullscreen)                */
+/* ---------------------------------- */
+
+.is-cinema {
+  background: #020305;
+}
+
+.is-cinema.is-idle,
+.is-cinema.is-idle * {
+  cursor: none;
+}
+
+.cinema-exit {
+  position: absolute;
+  z-index: 30;
+  top: 18px;
+  right: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border: 1px solid rgba(234, 232, 224, 0.28);
+  border-radius: 4px;
+  background: rgba(5, 6, 8, 0.86);
+  color: var(--bone);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  backdrop-filter: blur(14px);
+  opacity: 1;
+  transition: opacity 0.35s ease;
+}
+
+.cinema-exit kbd {
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.cinema-exit:hover {
+  background: rgba(234, 232, 224, 0.1);
+}
+
+.is-cinema.is-idle .cinema-exit {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---------------------------------- */
 /* Motion preferences                 */
 /* ---------------------------------- */
 
 @media (prefers-reduced-motion: reduce) {
   .holding-wash,
-  .live-dot,
   .rendering-note,
   .console-go.is-armed kbd {
     animation: none;

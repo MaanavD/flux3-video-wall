@@ -8,6 +8,7 @@ import {
   rename,
   stat,
 } from "node:fs/promises";
+import { hostname } from "node:os";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
@@ -15,10 +16,15 @@ import { pipeline } from "node:stream/promises";
 import { DatabaseSync } from "node:sqlite";
 import { generationTimeoutMs, shouldExpireGeneration } from "./queue-policy.mjs";
 import { DEFAULT_RECENT_WINDOW, selectVideo } from "./playlist.mjs";
+import { createSync } from "./sync.mjs";
 
 const localDir = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(localDir, "..");
-const dataDir = join(appRoot, "data");
+// WALL_DATA_DIR lets a second instance run beside the first on one machine
+// (tests, rehearsals); every wall at an event just uses ./data.
+const dataDir = process.env.WALL_DATA_DIR
+  ? resolve(process.env.WALL_DATA_DIR)
+  : join(appRoot, "data");
 const videoDir = join(dataDir, "videos");
 const seedDir = join(dataDir, "seed-videos");
 const trashDir = join(dataDir, "trash");
@@ -28,8 +34,18 @@ const bflApiKey = process.env.BFL_API_KEY || "";
 const bflEndpoint =
   process.env.BFL_MODEL_ENDPOINT || "https://api.bfl.ai/v1/flux-3-video";
 const bflResolution = process.env.BFL_RESOLUTION === "fhd" ? "fhd" : "hd";
+// Several walls share films through Supabase when these are set; each Mac is
+// named by WALL_ID. See local/sync.mjs.
+const supabaseUrl = process.env.SUPABASE_URL || "";
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const supabaseBucket = process.env.SUPABASE_BUCKET || "video-wall";
+const syncEnabled = Boolean(supabaseUrl && supabaseKey);
+const wallId = (process.env.WALL_ID || hostname()).trim();
+// With one BFL key shared by several Macs the per-key concurrency is split
+// between them, so a synced wall defaults to a smaller slice.
 const bflConcurrency = Number(
-  process.env.BFL_CONCURRENCY || (bflResolution === "fhd" ? 5 : 8),
+  process.env.BFL_CONCURRENCY ||
+    (syncEnabled ? 3 : bflResolution === "fhd" ? 5 : 8),
 );
 const bflVersion = process.env.BFL_MODEL_VERSION || "";
 // How many of the newest films the "latest" playback mode cycles through.
@@ -96,6 +112,24 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_submissions_status_retry
   ON submissions(status, retry_at)
 `);
+// Columns added for shared walls. Existing databases grow them in place.
+function ensureColumn(table, column, definition) {
+  const present = db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all()
+    .some((row) => row.name === column);
+  if (!present) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+ensureColumn("videos", "origin", "TEXT");
+ensureColumn("videos", "storage_path", "TEXT");
+ensureColumn("videos", "synced", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("submissions", "origin", "TEXT");
+ensureColumn("submissions", "synced", "INTEGER NOT NULL DEFAULT 0");
+// Rows from before sharing existed belong to this wall.
+db.prepare("UPDATE videos SET origin = ? WHERE origin IS NULL").run(wallId);
+db.prepare("UPDATE submissions SET origin = ? WHERE origin IS NULL").run(
+  wallId,
+);
 db.exec("PRAGMA optimize");
 db.prepare(
   "INSERT OR IGNORE INTO app_meta(key, value) VALUES ('playlist_cycle', '0')",
@@ -123,11 +157,13 @@ async function scanSeedVideos() {
   }
 
   const files = await readdir(seedDir);
+  // Seeds stay local to each Mac (copy the folder); only generated films
+  // travel through the shared tables, hence synced = 1 from the start.
   const insert = db.prepare(`
     INSERT OR IGNORE INTO videos (
       id, file_name, file_path, creator_name, prompt, duration,
-      source, play_count, last_cycle, is_active, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, 'seed', 0, -1, 1, ?)
+      source, play_count, last_cycle, is_active, created_at, origin, synced
+    ) VALUES (?, ?, ?, ?, ?, ?, 'seed', 0, -1, 1, ?, ?, 1)
   `);
 
   for (const fileName of files) {
@@ -144,9 +180,10 @@ async function scanSeedVideos() {
       fileName,
       absolutePath,
       String(entry?.name || "Black Forest Labs").slice(0, 40),
-      String(entry?.prompt || "").slice(0, 500),
+      String(entry?.prompt || ""),
       Number(entry?.duration) || null,
       nowIso(),
+      wallId,
     );
   }
 }
@@ -197,6 +234,7 @@ function toPublicVideo(row) {
     source: row.source,
     playCount: row.play_count,
     createdAt: row.created_at,
+    wall: row.origin,
     mediaUrl: `http://127.0.0.1:${port}/media/${row.id}`,
   };
 }
@@ -211,6 +249,7 @@ function toPublicSubmission(row) {
     error: row.error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    wall: row.origin,
   };
 }
 
@@ -244,12 +283,7 @@ const IN_FLIGHT_STATUSES = [
 // vanished is the one thing nobody in the room can explain.
 const FEED_FAILURE_WINDOW_MS = 15 * 60_000;
 
-async function moveVideoToTrash(id) {
-  const video = db
-    .prepare("SELECT * FROM videos WHERE id = ? AND is_active = 1")
-    .get(id);
-  if (!video) return false;
-
+async function retireVideoLocally(video) {
   const trashName = `${Date.now()}_${video.file_name}`;
   const trashPath = join(trashDir, trashName);
 
@@ -263,7 +297,25 @@ async function moveVideoToTrash(id) {
     `UPDATE videos
      SET is_active = 0, deleted_at = ?
      WHERE id = ?`,
-  ).run(nowIso(), id);
+  ).run(nowIso(), video.id);
+}
+
+async function moveVideoToTrash(id) {
+  const video = db
+    .prepare("SELECT * FROM videos WHERE id = ? AND is_active = 1")
+    .get(id);
+  if (!video) return false;
+
+  await retireVideoLocally(video);
+
+  // Shared films disappear from every wall; seeds are this Mac's own.
+  if (sync.enabled && video.source === "generated") {
+    try {
+      await sync.markDeleted(id);
+    } catch (error) {
+      console.error(`Sync: could not share the delete of ${id}: ${error.message}`);
+    }
+  }
   return true;
 }
 
@@ -330,7 +382,7 @@ function updateSubmission(id, fields) {
   if (!entries.length) return;
   const setters = entries.map(([key]) => `${key} = ?`).join(", ");
   db.prepare(
-    `UPDATE submissions SET ${setters}, updated_at = ? WHERE id = ?`,
+    `UPDATE submissions SET ${setters}, updated_at = ?, synced = 0 WHERE id = ?`,
   ).run(...entries.map(([, value]) => value), nowIso(), id);
 }
 
@@ -349,9 +401,10 @@ function expireStalledSubmissions() {
   const active = db
     .prepare(
       `SELECT id, created_at FROM submissions
-       WHERE status IN ('submitting', 'pending', 'reasoning', 'generating', 'downloading')`,
+       WHERE status IN ('submitting', 'pending', 'reasoning', 'generating', 'downloading')
+         AND origin = ?`,
     )
-    .all();
+    .all(wallId);
 
   for (const submission of active) {
     if (
@@ -394,8 +447,8 @@ async function downloadCompletedVideo(submission, result, providerSeed) {
     db.prepare(
       `INSERT INTO videos (
         id, file_name, file_path, creator_name, prompt, duration,
-        source, play_count, last_cycle, is_active, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'generated', 0, -1, 1, ?)`,
+        source, play_count, last_cycle, is_active, created_at, origin, synced
+      ) VALUES (?, ?, ?, ?, ?, ?, 'generated', 0, -1, 1, ?, ?, 0)`,
     ).run(
       videoId,
       finalName,
@@ -404,6 +457,7 @@ async function downloadCompletedVideo(submission, result, providerSeed) {
       submission.prompt,
       submission.duration,
       nowIso(),
+      wallId,
     );
     db.prepare(
       `UPDATE submissions
@@ -420,6 +474,16 @@ async function downloadCompletedVideo(submission, result, providerSeed) {
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;
+  }
+
+  // Share it right away; if the upload fails the sync tick retries.
+  if (sync.enabled) {
+    const video = db.prepare("SELECT * FROM videos WHERE id = ?").get(videoId);
+    sync
+      .publishVideo(video, finalPath)
+      .catch((error) =>
+        console.error(`Sync: could not publish ${videoId}: ${error.message}`),
+      );
   }
 }
 
@@ -573,9 +637,10 @@ async function workerTick() {
       .prepare(
         `SELECT * FROM submissions
          WHERE status IN ('pending', 'reasoning', 'generating', 'downloading')
-           AND polling_url IS NOT NULL`,
+           AND polling_url IS NOT NULL
+           AND origin = ?`,
       )
-      .all();
+      .all(wallId);
 
     await Promise.allSettled(active.map(pollSubmission));
     expireStalledSubmissions();
@@ -583,20 +648,21 @@ async function workerTick() {
     const activeCount = db
       .prepare(
         `SELECT COUNT(*) AS count FROM submissions
-         WHERE status IN ('submitting', 'pending', 'reasoning', 'generating')`,
+         WHERE status IN ('submitting', 'pending', 'reasoning', 'generating')
+           AND origin = ?`,
       )
-      .get().count;
+      .get(wallId).count;
     const available = Math.max(0, bflConcurrency - activeCount);
     if (!available) return;
 
     const queued = db
       .prepare(
         `SELECT * FROM submissions
-         WHERE status = 'queued' AND retry_at <= ?
+         WHERE status = 'queued' AND retry_at <= ? AND origin = ?
          ORDER BY created_at ASC
          LIMIT ?`,
       )
-      .all(Date.now(), available);
+      .all(Date.now(), wallId, available);
 
     for (const submission of queued) {
       await dispatchSubmission(submission);
@@ -610,6 +676,44 @@ setInterval(() => {
   workerTick().catch((error) => console.error("Worker failed:", error));
 }, 3_000).unref();
 workerTick().catch((error) => console.error("Worker failed:", error));
+
+const sync = createSync({
+  url: supabaseUrl,
+  key: supabaseKey,
+  bucket: supabaseBucket,
+  wallId,
+  db,
+  videoDir,
+  // A film from another wall arrives already cached on disk; from here on it
+  // is an ordinary local video and joins the current shuffle round.
+  onRemoteVideo(film) {
+    db.prepare(
+      `INSERT OR IGNORE INTO videos (
+        id, file_name, file_path, creator_name, prompt, duration,
+        source, play_count, last_cycle, is_active, created_at,
+        origin, storage_path, synced
+      ) VALUES (?, ?, ?, ?, ?, ?, 'generated', 0, -1, 1, ?, ?, ?, 1)`,
+    ).run(
+      film.id,
+      film.fileName,
+      film.filePath,
+      film.creatorName,
+      film.prompt,
+      film.duration,
+      film.createdAt,
+      film.origin,
+      film.storagePath,
+    );
+    console.log(`Sync: new film from ${film.origin} (${film.creatorName})`);
+  },
+  onRemoteVideoDeleted: retireVideoLocally,
+});
+if (sync.enabled) {
+  setInterval(() => {
+    sync.tick(resolveVideoPath);
+  }, 4_000).unref();
+  sync.tick(resolveVideoPath);
+}
 
 const server = createServer(async (request, response) => {
   if (request.method === "OPTIONS") {
@@ -638,6 +742,8 @@ const server = createServer(async (request, response) => {
         providerConfigured: Boolean(bflApiKey),
         endpoint: bflEndpoint,
         concurrency: bflConcurrency,
+        wallId,
+        sync: sync.state,
         ...counts,
       });
       return;
@@ -695,9 +801,9 @@ const server = createServer(async (request, response) => {
         });
         return;
       }
-      if (prompt.length < 10 || prompt.length > 500) {
+      if (prompt.length < 1) {
         sendJson(response, 422, {
-          error: "Use a prompt between 10 and 500 characters.",
+          error: "Type a prompt for the film.",
         });
         return;
       }
@@ -712,9 +818,10 @@ const server = createServer(async (request, response) => {
       const timestamp = nowIso();
       db.prepare(
         `INSERT INTO submissions (
-          id, creator_name, prompt, duration, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 'queued', ?, ?)`,
-      ).run(id, name, prompt, duration, timestamp, timestamp);
+          id, creator_name, prompt, duration, status, created_at, updated_at,
+          origin, synced
+        ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, 0)`,
+      ).run(id, name, prompt, duration, timestamp, timestamp, wallId);
 
       sendJson(response, 201, {
         id,
@@ -791,6 +898,12 @@ const server = createServer(async (request, response) => {
         sendJson(response, 404, { error: "Submission not found" });
         return;
       }
+      if (submission.origin !== wallId) {
+        sendJson(response, 409, {
+          error: `This film was typed on wall "${submission.origin}". Retry it there.`,
+        });
+        return;
+      }
       updateSubmission(submission.id, {
         status: "queued",
         provider_task_id: null,
@@ -822,5 +935,10 @@ server.listen(port, "127.0.0.1", () => {
     bflApiKey
       ? `BFL worker ready: ${bflEndpoint}`
       : "BFL_API_KEY is not set. New prompts will remain safely queued.",
+  );
+  console.log(
+    sync.enabled
+      ? `Shared wall "${wallId}": syncing with ${supabaseUrl} (bucket ${supabaseBucket})`
+      : `Local wall "${wallId}": no Supabase configured, films stay on this Mac.`,
   );
 });

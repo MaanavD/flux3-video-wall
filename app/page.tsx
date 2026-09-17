@@ -6,7 +6,6 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
@@ -279,14 +278,50 @@ function Console({
   }, [name, focusStage]);
 
   const advanceFromPrompt = useCallback(() => {
-    if (prompt.trim().length < 10) {
-      setNotice("GIVE YOUR FILM A LITTLE MORE DETAIL");
+    if (prompt.trim().length < 1) {
+      setNotice("TYPE A FILM TO CONTINUE");
       return;
     }
     setNotice(null);
     setStage("duration");
     focusStage("duration");
   }, [prompt, focusStage]);
+
+  // Mouse path. The keyboard walks the stages in order; a click may jump
+  // straight to a field or to ROLL FILM, so each entry checks what it needs.
+  const openPrompt = useCallback(() => {
+    if (stage === "prompt") return;
+    if (name.trim().length < 1) {
+      setNotice("TYPE A NAME TO BEGIN");
+      focusStage("name");
+      return;
+    }
+    setNotice(null);
+    setStage("prompt");
+    focusStage("prompt");
+  }, [stage, name, focusStage]);
+
+  const pickDuration = useCallback(
+    (index: number) => {
+      setDurationIndex(index);
+      if (stage === "duration") return;
+      if (name.trim().length < 1) {
+        setNotice("TYPE A NAME TO BEGIN");
+        focusStage("name");
+        return;
+      }
+      if (prompt.trim().length < 1) {
+        setNotice("TYPE A FILM TO CONTINUE");
+        setStage("prompt");
+        focusStage("prompt");
+        return;
+      }
+      setNotice(null);
+      setStage("duration");
+      focusStage("duration");
+    },
+    [stage, name, prompt, focusStage],
+  );
 
   const submit = useCallback(async () => {
     if (submitting) return;
@@ -339,6 +374,22 @@ function Console({
       focusStage("prompt");
     }
   }
+
+  const rollFilm = useCallback(() => {
+    if (name.trim().length < 1) {
+      setNotice("TYPE A NAME TO BEGIN");
+      setStage("name");
+      focusStage("name");
+      return;
+    }
+    if (prompt.trim().length < 1) {
+      setNotice("TYPE A FILM TO CONTINUE");
+      setStage("prompt");
+      focusStage("prompt");
+      return;
+    }
+    void submit();
+  }, [name, prompt, focusStage, submit]);
 
   const stageNumber = stage === "name" ? "01" : stage === "prompt" ? "02" : "03";
 
@@ -412,7 +463,10 @@ function Console({
               )}
             </div>
 
-            <div className={`console-field grow ${stage === "prompt" ? "is-live" : prompt ? "is-stamped" : "is-idle"}`}>
+            <div
+              className={`console-field grow ${stage === "prompt" ? "is-live" : prompt ? "is-stamped" : "is-idle"}`}
+              onClick={stage === "prompt" ? undefined : openPrompt}
+            >
               <span className="field-tag">02 YOUR FILM</span>
               {stage === "prompt" ? (
                 <input
@@ -422,9 +476,7 @@ function Console({
                   autoComplete="off"
                   spellCheck={false}
                   placeholder="describe a shot: subject, motion, light…"
-                  onChange={(event) =>
-                    setPrompt(event.target.value.slice(0, 500))
-                  }
+                  onChange={(event) => setPrompt(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === "Tab") {
                       event.preventDefault();
@@ -456,22 +508,34 @@ function Console({
               <span className="field-tag">03 LENGTH</span>
               <span className="duration-options">
                 {DURATIONS.map((seconds, index) => (
-                  <span
+                  <button
                     key={seconds}
+                    type="button"
                     role="radio"
                     aria-checked={index === durationIndex}
+                    tabIndex={-1}
                     className={index === durationIndex ? "is-chosen" : ""}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      pickDuration(index);
+                    }}
                   >
                     {seconds}s
-                  </span>
+                  </button>
                 ))}
               </span>
             </div>
 
-            <div className={`console-go ${stage === "duration" ? "is-armed" : ""}`}>
+            <button
+              type="button"
+              className={`console-go ${stage === "duration" ? "is-armed" : ""}`}
+              onClick={rollFilm}
+              disabled={submitting}
+              aria-label="Roll film: send this prompt to render"
+            >
               <kbd>↵</kbd>
               <span>{submitting ? "PRINTING…" : "ROLL FILM"}</span>
-            </div>
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
@@ -837,11 +901,19 @@ export default function Home() {
   const [currentVideo, setCurrentVideo] = useState<WallVideo | null>(null);
   const [wallState, setWallState] = useState<WallState>(EMPTY_STATE);
   const [rendering, setRendering] = useState<Submission[]>([]);
-  const [serverOnline, setServerOnline] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [displayMode, setDisplayMode] = useState<DisplayMode>("full");
   const [playbackMode, setPlaybackMode] = useState<PlaybackMode>("rotation");
   const [feedOpen, setFeedOpen] = useState(true);
+  // Cinema hides everything but the film: masthead, feed, credits, console.
+  // It rides on the browser's fullscreen so one key gets the wall onto a
+  // projector with nothing else on screen.
+  const [cinema, setCinema] = useState(false);
+  const [cinemaChromeVisible, setCinemaChromeVisible] = useState(false);
+  const cinemaRef = useRef(false);
+  useEffect(() => {
+    cinemaRef.current = cinema;
+  }, [cinema]);
   const [feed, setFeed] = useState<FeedState>({ films: [], pending: [] });
   const [videoKey, setVideoKey] = useState(0);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
@@ -882,9 +954,7 @@ export default function Home() {
         futureRef.current = [];
       }
       playVideo(result.video);
-      setServerOnline(true);
     } catch {
-      setServerOnline(false);
       playVideo(null);
     } finally {
       advancingRef.current = false;
@@ -945,7 +1015,6 @@ export default function Home() {
     try {
       const state = await api<WallState>("/api/state");
       setWallState(state);
-      setServerOnline(true);
 
       const activeVideo = currentVideoRef.current;
       if (activeVideo && !state.activeVideoIds.includes(activeVideo.id)) {
@@ -971,7 +1040,6 @@ export default function Home() {
       }
       return state;
     } catch {
-      setServerOnline(false);
       return null;
     }
   }, [advanceVideo]);
@@ -1043,8 +1111,71 @@ export default function Home() {
     };
   }, [playbackMode, feedOpen, refreshFeed]);
 
+  const enterCinema = useCallback(() => {
+    setCinema(true);
+    setCinemaChromeVisible(true);
+    const root = document.documentElement;
+    if (!document.fullscreenElement && root.requestFullscreen) {
+      root.requestFullscreen().catch(() => {
+        // Fullscreen can be refused (no user gesture, iframe); the wall still
+        // hides its chrome, which is the part that matters.
+      });
+    }
+  }, []);
+
+  const exitCinema = useCallback(() => {
+    setCinema(false);
+    setCinemaChromeVisible(false);
+    if (document.fullscreenElement && document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {});
+    }
+  }, []);
+
+  const toggleCinema = useCallback(() => {
+    if (cinemaRef.current) exitCinema();
+    else enterCinema();
+  }, [enterCinema, exitCinema]);
+
+  // Leaving browser fullscreen by any route (Esc, the OS, a gesture) also
+  // leaves cinema, so the two never disagree.
+  useEffect(() => {
+    function onFullscreenChange() {
+      if (!document.fullscreenElement && cinemaRef.current) setCinema(false);
+    }
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () =>
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
+
+  // In cinema the exit key and the cursor only show while the mouse moves.
+  // It is shown once on entry so the way out is never a secret.
+  useEffect(() => {
+    if (!cinema) return;
+    let hide: number | null = null;
+    function armHide() {
+      if (hide) window.clearTimeout(hide);
+      hide = window.setTimeout(() => setCinemaChromeVisible(false), 2_400);
+    }
+    function onPointerMove() {
+      setCinemaChromeVisible(true);
+      armHide();
+    }
+    armHide();
+    window.addEventListener("pointermove", onPointerMove);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      if (hide) window.clearTimeout(hide);
+    };
+  }, [cinema]);
+
   useEffect(() => {
     function keyboardShortcuts(event: KeyboardEvent) {
+      if (event.key === "Escape" && cinemaRef.current) {
+        event.preventDefault();
+        exitCinema();
+        return;
+      }
+
       if (
         event.metaKey &&
         !event.ctrlKey &&
@@ -1081,6 +1212,20 @@ export default function Home() {
         return;
       }
 
+      const cinemaShortcut =
+        (event.altKey &&
+          !event.metaKey &&
+          !event.ctrlKey &&
+          event.code === "KeyF") ||
+        ((event.metaKey || event.ctrlKey) &&
+          event.shiftKey &&
+          event.code === "KeyF");
+      if (cinemaShortcut) {
+        event.preventDefault();
+        toggleCinema();
+        return;
+      }
+
       const libraryShortcut =
         (event.altKey &&
           !event.metaKey &&
@@ -1109,20 +1254,40 @@ export default function Home() {
       ) {
         event.preventDefault();
         setDisplayMode((mode) => (mode === "full" ? "framed" : "full"));
+        return;
+      }
+      if (
+        event.key.toLowerCase() === "f" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !isTyping
+      ) {
+        event.preventDefault();
+        toggleCinema();
       }
     }
     window.addEventListener("keydown", keyboardShortcuts);
     return () => window.removeEventListener("keydown", keyboardShortcuts);
-  }, [goBack, goForward, togglePlaybackMode]);
+  }, [goBack, goForward, togglePlaybackMode, toggleCinema, exitCinema]);
 
-  const pendingCount = useMemo(
-    () => queueTotal(wallState.queue),
-    [wallState.queue],
-  );
   const nowRendering = rendering[0];
 
   return (
-    <main className={`wall view-${displayMode}`}>
+    <main
+      className={`wall view-${cinema ? "full" : displayMode}${cinema ? " is-cinema" : ""}${cinema && !cinemaChromeVisible ? " is-idle" : ""}`}
+    >
+      {cinema && (
+        <button
+          className="cinema-exit"
+          onClick={exitCinema}
+          aria-label="Leave fullscreen"
+          tabIndex={cinemaChromeVisible ? 0 : -1}
+        >
+          EXIT FULLSCREEN <kbd>ESC</kbd>
+        </button>
+      )}
+      {!cinema && (
       <header className="masthead" aria-label="Black Forest Labs">
         <div className="lockup">
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1134,15 +1299,6 @@ export default function Home() {
         </div>
         <div className="masthead-status">
           <nav className="operator-controls" aria-label="Wall controls">
-            <div className="wall-presence">
-              <span className={`live-dot ${serverOnline ? "" : "is-offline"}`} />
-              <span>{serverOnline ? "LIVE" : "OFFLINE"}</span>
-              <i aria-hidden="true" />
-              <span>{wallState.videoCount} FILMS</span>
-              {pendingCount > 0 && (
-                <span className="in-motion">{pendingCount} RENDERING</span>
-              )}
-            </div>
             <button
               className="mode-key"
               onClick={togglePlaybackMode}
@@ -1167,6 +1323,13 @@ export default function Home() {
               {displayMode === "full" ? "FULL" : "FRAME"}
             </button>
             <button
+              className="view-key"
+              onClick={enterCinema}
+              aria-label="Fullscreen: hide the console, feed and credits"
+            >
+              FULLSCREEN <kbd>⌥F</kbd>
+            </button>
+            <button
               className="library-key"
               onClick={() => setLibraryOpen(true)}
               aria-label="Open the reel library"
@@ -1176,6 +1339,7 @@ export default function Home() {
           </nav>
         </div>
       </header>
+      )}
 
       <div className="stage">
         <AnimatePresence mode="wait">
@@ -1224,7 +1388,7 @@ export default function Home() {
         </AnimatePresence>
       </div>
 
-      {playbackMode === "latest" && feedOpen && (
+      {!cinema && playbackMode === "latest" && feedOpen && (
         <FilmFeed
           films={feed.films}
           pending={feed.pending}
@@ -1235,6 +1399,7 @@ export default function Home() {
         />
       )}
 
+      {!cinema && (
       <section className="credit-section" aria-label="Current film" aria-live="polite">
         <AnimatePresence mode="wait">
           {currentVideo && (
@@ -1269,14 +1434,17 @@ export default function Home() {
           </span>
         )}
       </section>
+      )}
 
-      <Console
-        providerConfigured={wallState.providerConfigured}
-        onSubmitted={() => {
-          void refreshState();
-          void refreshFeed();
-        }}
-      />
+      {!cinema && (
+        <Console
+          providerConfigured={wallState.providerConfigured}
+          onSubmitted={() => {
+            void refreshState();
+            void refreshFeed();
+          }}
+        />
+      )}
 
       <LibraryDialog
         open={libraryOpen}
