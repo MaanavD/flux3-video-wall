@@ -160,7 +160,7 @@ setInterval(() => {
 
 function corsHeaders(extra = {}) {
   return {
-    "Access-Control-Allow-Origin": "*",
+    "Vary": "Origin",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
     "Cache-Control": "no-store",
@@ -365,7 +365,7 @@ function expireStalledSubmissions() {
 
     updateSubmission(submission.id, {
       status: "failed",
-      error: `Render timed out after ${Math.ceil(timeoutMs / 60_000)} minutes. Likely private or copyrighted content.`,
+      error: `Render timed out after ${Math.ceil(timeoutMs / 60_000)} minutes. Check the generation queue before retrying.`,
     });
   }
 }
@@ -612,6 +612,15 @@ setInterval(() => {
 workerTick().catch((error) => console.error("Worker failed:", error));
 
 const server = createServer(async (request, response) => {
+  // Loopback binding alone does not stop other websites spending the local key.
+  const host = request.headers.host;
+  const origin = request.headers.origin;
+  if (![ `127.0.0.1:${port}`, `localhost:${port}` ].includes(host) ||
+      (origin && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin))) {
+    sendJson(response, 403, { error: "Open the wall using its local browser address." });
+    return;
+  }
+  if (origin) response.setHeader("Access-Control-Allow-Origin", origin);
   if (request.method === "OPTIONS") {
     response.writeHead(204, corsHeaders());
     response.end();

@@ -6,12 +6,19 @@ The entire application runs on one laptop. The only external traffic is the subm
 
 ## First-time setup
 
-1. Copy `.env.example` to `.env.local`.
-2. Add your BFL API key to `BFL_API_KEY`.
-3. Add a model version to `BFL_MODEL_VERSION` if you're pinning one.
-4. Drop the starting MP4 files into `data/seed-videos`.
-5. Run `npm run local`.
-6. Open [http://localhost:3000](http://localhost:3000) and move the window to the projector.
+For the download-and-launch bundles, follow [the nontechnical setup guide](scripts/RELEASE-README.md). They include the runtime and ten starting films.
+
+To run from source:
+
+1. Install Node.js 24 LTS from https://nodejs.org/.
+2. Download and extract this repository, then open a terminal in the extracted folder.
+3. Run `npm ci` once to install the locked dependencies.
+4. Run `npm run local -- --open`. Paste the BFL API key when prompted and press Enter. The key stays hidden while entering it and is saved locally; no `.env` editing is needed.
+5. Leave the terminal open. The browser opens after startup, using a free port if 3000 is occupied. Press Ctrl+C in the terminal to stop.
+
+The ten included starting films are imported automatically. New generations use the account's BFL API credits. The key must have FLUX 3 video access.
+
+To replace a saved key from source, run `npm run local -- --change-key --open`. Advanced settings remain optional in `.env.local`; see `.env.example`.
 
 The local API runs at `http://127.0.0.1:8788`.
 
